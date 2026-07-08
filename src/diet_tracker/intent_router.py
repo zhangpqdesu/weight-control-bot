@@ -123,7 +123,11 @@ class IntentRouter:
         target = self._target_from_text(normalized) or context.sender_person
         meal_words = {"早餐", "早饭", "午餐", "午饭", "晚餐", "晚饭", "夜宵", "加餐"}
         image_source: ImageSource = "none"
-        if context.sender_has_recent_image:
+        if target == "gf" and context.sender_person != "gf" and context.gf_has_recent_image:
+            image_source = "target_person"
+        elif target == "me" and context.sender_person != "me" and context.me_has_recent_image:
+            image_source = "target_person"
+        elif context.sender_has_recent_image:
             image_source = "sender"
         elif target == "gf" and context.gf_has_recent_image:
             image_source = "target_person"
