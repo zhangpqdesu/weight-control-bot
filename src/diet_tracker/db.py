@@ -145,6 +145,18 @@ class DietDatabase:
         person_key = row["person_key"]
         return person_key if person_key in {"me", "gf"} else None
 
+    def feishu_open_ids_for_person(self, person_key: PersonKey) -> list[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT open_id FROM feishu_user_bindings
+                WHERE person_key = ?
+                ORDER BY updated_at DESC
+                """,
+                (person_key,),
+            ).fetchall()
+        return [str(row["open_id"]) for row in rows]
+
     def remember_feishu_image(
         self,
         open_id: str,
@@ -175,6 +187,26 @@ class DietDatabase:
                 (open_id, chat_id),
             ).fetchone()
         return str(row["image_path"]) if row else None
+
+    def latest_feishu_image_for_person(self, person_key: PersonKey, chat_id: str) -> tuple[str, str] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT images.open_id, images.image_path
+                FROM feishu_recent_images AS images
+                INNER JOIN feishu_user_bindings AS bindings
+                    ON bindings.open_id = images.open_id
+                WHERE bindings.person_key = ?
+                  AND images.chat_id = ?
+                  AND images.created_at >= datetime('now', '-15 minutes')
+                ORDER BY images.created_at DESC, images.id DESC
+                LIMIT 1
+                """,
+                (person_key, chat_id),
+            ).fetchone()
+        if not row:
+            return None
+        return str(row["open_id"]), str(row["image_path"])
 
     def latest_feishu_image_in_chat(self, chat_id: str) -> tuple[str, str] | None:
         with self._connect() as conn:

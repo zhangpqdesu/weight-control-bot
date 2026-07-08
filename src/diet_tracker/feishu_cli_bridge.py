@@ -22,6 +22,7 @@ HELP = """减肥记录机器人
 /今天 查看自己的今日统计
 /我是小张 或 我是小张 绑定为小张
 /我是小韩 或 我是小韩 绑定为小韩
+把上一张图绑定为小韩 绑定最近发图的人为小韩
 /help 查看帮助
 """
 
@@ -58,8 +59,8 @@ class FeishuCliBridge:
         if not message_id or not sender_id:
             return
 
-        mentioned_bot = self._has_leading_mention(content)
-        clean_content = self._strip_leading_mention(content)
+        mentioned_bot = self._has_mention(content)
+        clean_content = self._strip_mentions(content)
 
         bind_key = self._match_bind_command(message_type, clean_content)
         if bind_key:
@@ -71,12 +72,25 @@ class FeishuCliBridge:
             )
             return
 
+        bind_recent_image_key = self._match_bind_recent_image_sender_command(
+            message_type,
+            clean_content,
+        )
+        if bind_recent_image_key:
+            reply = self._bind_recent_image_sender(chat_id, bind_recent_image_key)
+            self.reply_text(message_id, reply)
+            return
+
         if chat_type == "group" and not self._should_handle_group_message(
             message_type=message_type,
             content=clean_content,
             mentioned_bot=mentioned_bot,
             bind_key=bind_key,
         ):
+            return
+
+        if message_type == "image" and chat_type == "group":
+            self._cache_image(sender_id, chat_id, message_id, content)
             return
 
         person_key = self._resolve_person(sender_id)
@@ -121,11 +135,21 @@ class FeishuCliBridge:
                 return self.service.today_reply(person_key)
             if self._looks_like_image_reference(content):
                 target_person_key = self._mentioned_person_key(content) or person_key
-                image_path = self.service.db.latest_feishu_image(sender_id, chat_id)
+                image_sender_id = sender_id
+                image_path = None
+                if target_person_key != person_key:
+                    latest_for_person = self.service.db.latest_feishu_image_for_person(
+                        target_person_key,
+                        chat_id,
+                    )
+                    if latest_for_person:
+                        image_sender_id, image_path = latest_for_person
+                if not image_path:
+                    image_path = self.service.db.latest_feishu_image(sender_id, chat_id)
                 if not image_path and chat_type == "group":
-                    latest = self.service.db.latest_feishu_image_in_chat(chat_id)
-                    if latest:
-                        image_sender_id, image_path = latest
+                    latest_in_chat = self.service.db.latest_feishu_image_in_chat(chat_id)
+                    if latest_in_chat:
+                        image_sender_id, image_path = latest_in_chat
                         target_person_key = (
                             self._mentioned_person_key(content)
                             or self._resolve_person(image_sender_id)
@@ -151,19 +175,7 @@ class FeishuCliBridge:
             return self.service.entry_reply(entry)
 
         if message_type == "image":
-            image_key = self._extract_image_key(content)
-            if not image_key:
-                return (
-                    "收到图片，但 CLI 事件里没有 image_key。\n"
-                    "请用 `lark-cli event schema im.message.receive_v1` 确认图片事件 content 格式。"
-                )
-            image_path = self.download_message_image(message_id, image_key)
-            self.service.db.remember_feishu_image(
-                open_id=sender_id,
-                chat_id=chat_id,
-                message_id=message_id,
-                image_path=str(image_path),
-            )
+            image_path = self._cache_image(sender_id, chat_id, message_id, content)
             if chat_type == "group":
                 return None
             entry = self.service.add_food(person_key=person_key, text=None, image_path=image_path)
@@ -189,9 +201,27 @@ class FeishuCliBridge:
             return mentioned_bot
         if self._looks_like_image_reference(content):
             return mentioned_bot
+        if self._match_bind_recent_image_sender_command(message_type, content):
+            return mentioned_bot
         if self._looks_like_food_record(content):
             return mentioned_bot
         return False
+
+    def _cache_image(self, sender_id: str, chat_id: str, message_id: str, content: str) -> Path:
+        image_key = self._extract_image_key(content)
+        if not image_key:
+            raise RuntimeError(
+                "收到图片，但 CLI 事件里没有 image_key。"
+                "请用 `lark-cli event schema im.message.receive_v1` 确认图片事件 content 格式。"
+            )
+        image_path = self.download_message_image(message_id, image_key)
+        self.service.db.remember_feishu_image(
+            open_id=sender_id,
+            chat_id=chat_id,
+            message_id=message_id,
+            image_path=str(image_path),
+        )
+        return image_path
 
     def reply_text(self, message_id: str, text: str) -> None:
         self._run_cli(
@@ -283,6 +313,36 @@ class FeishuCliBridge:
             return "gf"
         return None
 
+    def _match_bind_recent_image_sender_command(
+        self,
+        message_type: str,
+        content: str,
+    ) -> PersonKey | None:
+        if message_type != "text":
+            return None
+        normalized = content.strip().replace(" ", "")
+        if not any(keyword in normalized for keyword in ["上一张图", "最近图片", "最近的图", "刚才图片", "刚才的图"]):
+            return None
+        if "绑定" not in normalized and "是" not in normalized:
+            return None
+        if "小韩" in normalized or "女朋友" in normalized:
+            return "gf"
+        if "小张" in normalized or "我" in normalized:
+            return "me"
+        return None
+
+    def _bind_recent_image_sender(self, chat_id: str, person_key: PersonKey) -> str:
+        latest = self.service.db.latest_feishu_image_in_chat(chat_id)
+        person = self.settings.people[person_key]
+        if not latest:
+            return f"没找到 15 分钟内的群图片，暂时没法绑定为 {person.display_name}。"
+        image_sender_id, _ = latest
+        self.service.db.bind_feishu_user(image_sender_id, person_key, person.display_name)
+        return (
+            f"已绑定最近发图的人为：{person.display_name}\n"
+            f"以后这个 sender_id 的图片会优先记录到 {person.display_name}。"
+        )
+
     def _extract_image_key(self, content: str) -> str | None:
         try:
             parsed = json.loads(content)
@@ -347,15 +407,18 @@ class FeishuCliBridge:
         return None
 
     def _strip_leading_mention(self, content: str) -> str:
+        return self._strip_mentions(content)
+
+    def _strip_mentions(self, content: str) -> str:
         text = content.strip()
-        if not text.startswith("@"):
-            return text
-        # Feishu's rendered content is commonly "@BotName command".
-        match = re.match(r"^@\S+\s+(.*)$", text, flags=re.S)
-        return match.group(1).strip() if match else text
+        text = re.sub(r"@\S+", " ", text, flags=re.S)
+        return re.sub(r"\s+", " ", text).strip()
 
     def _has_leading_mention(self, content: str) -> bool:
-        return content.strip().startswith("@")
+        return self._has_mention(content)
+
+    def _has_mention(self, content: str) -> bool:
+        return "@" in content
 
 
 def main() -> None:

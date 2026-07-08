@@ -50,6 +50,7 @@ def test_bind_and_resolve_feishu_user(tmp_path):
 
 def test_remember_and_find_latest_feishu_image(tmp_path):
     db = DietDatabase(tmp_path / "diet.sqlite3")
+    db.bind_feishu_user("ou_zhang", "me", "小张")
 
     db.remember_feishu_image(
         open_id="ou_zhang",
@@ -67,3 +68,5 @@ def test_remember_and_find_latest_feishu_image(tmp_path):
     assert db.latest_feishu_image("ou_zhang", "oc_room") == "data/two.jpg"
     assert db.latest_feishu_image("ou_han", "oc_room") is None
     assert db.latest_feishu_image_in_chat("oc_room") == ("ou_zhang", "data/two.jpg")
+    assert db.latest_feishu_image_for_person("me", "oc_room") == ("ou_zhang", "data/two.jpg")
+    assert db.latest_feishu_image_for_person("gf", "oc_room") is None
