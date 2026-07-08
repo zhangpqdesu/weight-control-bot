@@ -463,7 +463,10 @@ class FeishuCliBridge:
 
     def _looks_like_food_record(self, content: str) -> bool:
         normalized = content.replace(" ", "")
-        if len(normalized) < 3:
+        meal_words = {"早餐", "早饭", "午餐", "午饭", "晚餐", "晚饭", "夜宵", "加餐"}
+        if normalized in meal_words:
+            return True
+        if len(normalized) < 2:
             return False
         keywords = [
             "早餐",

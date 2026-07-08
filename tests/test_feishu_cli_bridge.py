@@ -21,6 +21,7 @@ def test_group_message_gate_requires_mention_for_food_text(tmp_path, monkeypatch
     assert not bridge._should_handle_group_message("text", "午饭 一碗面", False, None)
     assert bridge._should_handle_group_message("text", "午饭 一碗面", True, None)
     assert bridge._should_handle_group_message("text", "我的午饭", True, None)
+    assert bridge._should_handle_group_message("text", "晚饭", True, None)
     assert bridge._strip_leading_mention("@减肥机器人 午饭 一碗面") == "午饭 一碗面"
     assert bridge._strip_mentions("看图@减肥机器人") == "看图"
     assert bridge._has_mention("看图@减肥机器人")
