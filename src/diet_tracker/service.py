@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import date, datetime
 import os
 from pathlib import Path
+import sys
+import time
 
 from .config import Settings
 from .db import DietDatabase
@@ -19,7 +21,18 @@ class DietTrackerService:
         self.feishu = FeishuBitableClient(settings)
 
     def add_food(self, person_key: PersonKey, text: str | None, image_path: Path | None) -> FoodEntry:
+        t0 = time.perf_counter()
+        print(
+            f"analysis_start person={person_key} has_text={bool(text)} has_image={bool(image_path)}",
+            file=sys.stderr,
+            flush=True,
+        )
         estimate = self.analyzer.analyze(text=text, image_path=image_path)
+        print(
+            f"analysis_done person={person_key} elapsed={time.perf_counter() - t0:.2f}s",
+            file=sys.stderr,
+            flush=True,
+        )
         entry = FoodEntry(
             person_key=person_key,
             eaten_at=datetime.now(),

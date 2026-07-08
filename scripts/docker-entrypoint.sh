@@ -22,4 +22,4 @@ printf '%s' "$FEISHU_APP_SECRET" \
       --app-secret-stdin \
       --brand "${FEISHU_BRAND:-feishu}" >/dev/null
 
-exec sh -c 'tail -f /dev/null | lark-cli event consume im.message.receive_v1 --as bot --quiet | python -m diet_tracker.feishu_cli_bridge'
+exec sh -c 'tail -f /dev/null | lark-cli event consume im.message.receive_v1 --as bot --quiet | python -u -m diet_tracker.feishu_cli_bridge'

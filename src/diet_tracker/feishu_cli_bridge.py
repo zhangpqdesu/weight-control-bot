@@ -6,6 +6,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -39,12 +40,28 @@ class FeishuCliBridge:
 
     def run_stdin_loop(self) -> None:
         for line in sys.stdin:
+            received_at = time.perf_counter()
             line = line.strip()
             if not line:
                 continue
             try:
                 event = json.loads(line)
+                print(
+                    "event_received "
+                    f"message_id={event.get('message_id') or event.get('id') or ''} "
+                    f"type={event.get('message_type') or ''} "
+                    f"chat_type={event.get('chat_type') or ''}",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 self.handle_event(event)
+                print(
+                    "event_done "
+                    f"message_id={event.get('message_id') or event.get('id') or ''} "
+                    f"elapsed={time.perf_counter() - received_at:.2f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
             except Exception as exc:
                 print(f"failed to handle event: {exc}", file=sys.stderr, flush=True)
 
@@ -90,7 +107,13 @@ class FeishuCliBridge:
             return
 
         if message_type == "image" and chat_type == "group":
+            t0 = time.perf_counter()
             self._cache_image(sender_id, chat_id, message_id, content)
+            print(
+                f"image_cached message_id={message_id} elapsed={time.perf_counter() - t0:.2f}s",
+                file=sys.stderr,
+                flush=True,
+            )
             return
 
         person_key = self._resolve_person(sender_id)
@@ -238,7 +261,13 @@ class FeishuCliBridge:
                 "收到图片，但 CLI 事件里没有 image_key。"
                 "请用 `lark-cli event schema im.message.receive_v1` 确认图片事件 content 格式。"
             )
+        t0 = time.perf_counter()
         image_path = self.download_message_image(message_id, image_key)
+        print(
+            f"image_downloaded message_id={message_id} elapsed={time.perf_counter() - t0:.2f}s",
+            file=sys.stderr,
+            flush=True,
+        )
         self.service.db.remember_feishu_image(
             open_id=sender_id,
             chat_id=chat_id,
@@ -248,6 +277,7 @@ class FeishuCliBridge:
         return image_path
 
     def reply_text(self, message_id: str, text: str) -> None:
+        t0 = time.perf_counter()
         self._run_cli(
             [
                 "im",
@@ -261,6 +291,11 @@ class FeishuCliBridge:
                 "--format",
                 "json",
             ]
+        )
+        print(
+            f"reply_sent message_id={message_id} elapsed={time.perf_counter() - t0:.2f}s",
+            file=sys.stderr,
+            flush=True,
         )
 
     def download_message_image(self, message_id: str, image_key: str) -> Path:
