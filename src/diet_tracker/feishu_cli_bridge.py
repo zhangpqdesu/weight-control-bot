@@ -71,12 +71,13 @@ class FeishuCliBridge:
         sender_id = str(event.get("sender_id") or "")
         chat_id = str(event.get("chat_id") or "")
         chat_type = str(event.get("chat_type") or "")
-        content = str(event.get("content") or "").strip()
+        raw_content = str(event.get("content") or "").strip()
+        content = self._text_content(raw_content) if message_type == "text" else raw_content
 
         if not message_id or not sender_id:
             return
 
-        mentioned_bot = self._has_mention(content)
+        mentioned_bot = self._event_mentions_bot(event, raw_content, content)
         clean_content = self._strip_mentions(content)
 
         bind_key = self._match_bind_command(message_type, clean_content)
@@ -104,7 +105,21 @@ class FeishuCliBridge:
             mentioned_bot=mentioned_bot,
             bind_key=bind_key,
         ):
-            return
+            if not self._should_handle_group_context_text(
+                sender_id=sender_id,
+                chat_id=chat_id,
+                message_type=message_type,
+                content=clean_content,
+            ):
+                print(
+                    "event_ignored "
+                    f"message_id={message_id} "
+                    f"mentioned={mentioned_bot} "
+                    f"content={clean_content[:80]!r}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return
 
         if message_type == "image" and chat_type == "group":
             t0 = time.perf_counter()
@@ -253,6 +268,19 @@ class FeishuCliBridge:
         if self._looks_like_food_record(content):
             return mentioned_bot
         return False
+
+    def _should_handle_group_context_text(
+        self,
+        sender_id: str,
+        chat_id: str,
+        message_type: str,
+        content: str,
+    ) -> bool:
+        if message_type != "text":
+            return False
+        if not self._looks_like_food_record(content):
+            return False
+        return self.service.db.latest_feishu_image(sender_id, chat_id) is not None
 
     def _cache_image(self, sender_id: str, chat_id: str, message_id: str, content: str) -> Path:
         image_key = self._extract_image_key(content)
@@ -478,6 +506,49 @@ class FeishuCliBridge:
 
     def _has_mention(self, content: str) -> bool:
         return "@" in content
+
+    def _text_content(self, raw_content: str) -> str:
+        try:
+            parsed = json.loads(raw_content)
+        except json.JSONDecodeError:
+            return raw_content
+        if isinstance(parsed, dict):
+            text = parsed.get("text") or parsed.get("content")
+            if isinstance(text, str):
+                return text.strip()
+        return raw_content
+
+    def _event_mentions_bot(
+        self,
+        event: dict[str, Any],
+        raw_content: str,
+        text_content: str,
+    ) -> bool:
+        if self._has_mention(raw_content) or self._has_mention(text_content):
+            return True
+        if self._json_mentions(raw_content):
+            return True
+        return self._contains_nonempty_mention_field(event)
+
+    def _json_mentions(self, raw_content: str) -> bool:
+        try:
+            parsed = json.loads(raw_content)
+        except json.JSONDecodeError:
+            return False
+        return self._contains_nonempty_mention_field(parsed)
+
+    def _contains_nonempty_mention_field(self, value: Any) -> bool:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                normalized_key = str(key).lower()
+                if normalized_key in {"mentions", "mention", "at_users", "ats"}:
+                    if child:
+                        return True
+                if self._contains_nonempty_mention_field(child):
+                    return True
+        if isinstance(value, list):
+            return any(self._contains_nonempty_mention_field(item) for item in value)
+        return False
 
 
 def main() -> None:

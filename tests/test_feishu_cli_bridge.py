@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from diet_tracker.config import load_settings
 from diet_tracker.feishu_cli_bridge import FeishuCliBridge
 
@@ -57,3 +59,37 @@ def test_resolve_context_image_for_meal_text(tmp_path, monkeypatch):
 
     assert person_key == "me"
     assert image_path == "data/lunch.jpg"
+
+
+def test_feishu_json_text_mentions_are_detected(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "diet.sqlite3"))
+    bridge = FeishuCliBridge(load_settings())
+    raw_content = json.dumps(
+        {
+            "text": "我的午饭",
+            "mentions": [{"name": "减肥机器人"}],
+        },
+        ensure_ascii=False,
+    )
+
+    assert bridge._text_content(raw_content) == "我的午饭"
+    assert bridge._event_mentions_bot({}, raw_content, "我的午饭")
+
+
+def test_group_context_text_can_use_recent_sender_image_without_mention(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "diet.sqlite3"))
+    bridge = FeishuCliBridge(load_settings())
+    bridge.service.db.remember_feishu_image("ou_zhang", "oc_room", "om_1", "data/lunch.jpg")
+
+    assert bridge._should_handle_group_context_text(
+        sender_id="ou_zhang",
+        chat_id="oc_room",
+        message_type="text",
+        content="我的午饭",
+    )
+    assert not bridge._should_handle_group_context_text(
+        sender_id="ou_other",
+        chat_id="oc_room",
+        message_type="text",
+        content="我的午饭",
+    )
