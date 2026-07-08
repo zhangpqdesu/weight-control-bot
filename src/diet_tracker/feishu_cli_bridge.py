@@ -12,6 +12,7 @@ from typing import Any
 
 from .config import Settings, load_settings
 from .feishu_fields import food_entry_to_feishu_fields
+from .intent_router import Intent, IntentContext, IntentRouter
 from .models import FoodEntry
 from .models import PersonKey
 from .service import DietTrackerService
@@ -37,6 +38,7 @@ class FeishuCliBridge:
         self.lark_cli = _split_command(os.getenv("LARK_CLI_CMD", "lark-cli"))
         self.sync_mode = os.getenv("FEISHU_SYNC_MODE", "api").lower()
         self.media_dir = Path("data/feishu_cli_media")
+        self.router = IntentRouter(settings)
 
     def run_stdin_loop(self) -> None:
         for line in sys.stdin:
@@ -99,28 +101,6 @@ class FeishuCliBridge:
             self.reply_text(message_id, reply)
             return
 
-        if chat_type == "group" and not self._should_handle_group_message(
-            message_type=message_type,
-            content=clean_content,
-            mentioned_bot=mentioned_bot,
-            bind_key=bind_key,
-        ):
-            if not self._should_handle_group_context_text(
-                sender_id=sender_id,
-                chat_id=chat_id,
-                message_type=message_type,
-                content=clean_content,
-            ):
-                print(
-                    "event_ignored "
-                    f"message_id={message_id} "
-                    f"mentioned={mentioned_bot} "
-                    f"content={clean_content[:80]!r}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                return
-
         if message_type == "image" and chat_type == "group":
             t0 = time.perf_counter()
             self._cache_image(sender_id, chat_id, message_id, content)
@@ -132,7 +112,7 @@ class FeishuCliBridge:
             return
 
         person_key = self._resolve_person(sender_id)
-        if not person_key:
+        if not person_key and message_type != "text":
             self.reply_text(
                 message_id,
                 "我还不认识你。\n"
@@ -150,6 +130,7 @@ class FeishuCliBridge:
                 message_id=message_id,
                 message_type=message_type,
                 content=clean_content,
+                mentioned_bot=mentioned_bot,
             )
         except Exception as exc:
             reply = f"记录失败：{exc}"
@@ -158,49 +139,80 @@ class FeishuCliBridge:
 
     def _handle_message(
         self,
-        person_key: PersonKey,
+        person_key: PersonKey | None,
         sender_id: str,
         chat_id: str,
         chat_type: str,
         message_id: str,
         message_type: str,
         content: str,
+        mentioned_bot: bool = True,
     ) -> str | None:
         if message_type == "text":
-            if content in {"/help", "help", "帮助"}:
-                return HELP
-            if content in {"/今天", "今天", "/today"}:
-                return self.service.today_reply(person_key)
-            target_person_key, image_path = self._resolve_context_image(
+            if chat_type == "group" and not mentioned_bot:
+                return None
+            intent = self._route_intent(
                 person_key=person_key,
                 sender_id=sender_id,
                 chat_id=chat_id,
                 chat_type=chat_type,
+                message_type=message_type,
                 content=content,
+                mentioned_bot=mentioned_bot,
             )
-            if self._looks_like_image_reference(content):
-                if not image_path:
+            print(
+                "intent "
+                f"action={intent.action} "
+                f"target={intent.target_person} "
+                f"image_source={intent.image_source} "
+                f"confidence={intent.confidence:.2f} "
+                f"reason={intent.reason[:80]!r}",
+                file=sys.stderr,
+                flush=True,
+            )
+            if intent.action == "ignore":
+                return None
+            if intent.action == "help":
+                return HELP
+            target_person_key = intent.target_person or person_key
+            if intent.action == "query_today":
+                if not target_person_key:
+                    return "我还不知道要查谁。你可以先发：我是小张 或 我是小韩"
+                return self.service.today_reply(target_person_key)
+            if intent.action == "bind_user":
+                if not target_person_key:
+                    return "你想绑定为小张还是小韩？"
+                person = self.settings.people[target_person_key]
+                self.service.db.bind_feishu_user(sender_id, target_person_key, person.display_name)
+                return f"已绑定：{person.display_name}\n以后你的饮食会记录到 {person.display_name} 的每日统计里。"
+            if intent.action == "bind_recent_image_sender":
+                if not target_person_key:
+                    return "你想把最近发图的人绑定为小张还是小韩？"
+                return self._bind_recent_image_sender(chat_id, target_person_key)
+            if intent.action == "clarify":
+                return intent.clarification or "这是要记录饮食，还是查今天统计？"
+            if intent.action == "record_food":
+                if not target_person_key:
                     return (
-                        "我没拿到你前面那张图片。\n"
-                        "可选办法：\n"
-                        "1. 私聊我直接发图片；\n"
-                        "2. 在飞书开放平台给机器人开通“获取群组中所有消息/读取群组消息”权限，重新发布；\n"
-                        "3. 发图后 15 分钟内再 @ 我说“看图”。"
+                        "我还不认识你。\n"
+                        "如果你是小张，请发：我是小张\n"
+                        "如果你是小韩，请发：我是小韩"
                     )
+                image_path = self._image_path_for_intent(
+                    intent=intent,
+                    sender_id=sender_id,
+                    chat_id=chat_id,
+                )
+                if intent.image_source != "none" and not image_path:
+                    return "我理解你想用最近的图片记录，但我没拿到那张图。可以重新发图后再 @ 我。"
                 entry = self.service.add_food(
                     person_key=target_person_key,
-                    text=content,
-                    image_path=Path(image_path),
+                    text=intent.normalized_text or content,
+                    image_path=Path(image_path) if image_path else None,
                 )
                 self.sync_base_with_cli(entry)
                 return self.service.entry_reply(entry)
-            entry = self.service.add_food(
-                person_key=target_person_key,
-                text=content,
-                image_path=Path(image_path) if image_path else None,
-            )
-            self.sync_base_with_cli(entry)
-            return self.service.entry_reply(entry)
+            return None
 
         if message_type == "image":
             image_path = self._cache_image(sender_id, chat_id, message_id, content)
@@ -210,6 +222,43 @@ class FeishuCliBridge:
             self.sync_base_with_cli(entry)
             return self.service.entry_reply(entry)
 
+        return None
+
+    def _route_intent(
+        self,
+        person_key: PersonKey | None,
+        sender_id: str,
+        chat_id: str,
+        chat_type: str,
+        message_type: str,
+        content: str,
+        mentioned_bot: bool,
+    ) -> Intent:
+        context = IntentContext(
+            message_type=message_type,
+            content=content,
+            chat_type=chat_type,
+            sender_person=person_key,
+            mentioned_bot=mentioned_bot,
+            sender_has_recent_image=self.service.db.latest_feishu_image(sender_id, chat_id) is not None,
+            chat_has_recent_image=self.service.db.latest_feishu_image_in_chat(chat_id) is not None,
+            me_has_recent_image=self.service.db.latest_feishu_image_for_person("me", chat_id) is not None,
+            gf_has_recent_image=self.service.db.latest_feishu_image_for_person("gf", chat_id) is not None,
+        )
+        return self.router.route(context)
+
+    def _image_path_for_intent(self, intent: Intent, sender_id: str, chat_id: str) -> str | None:
+        if intent.image_source == "sender":
+            return self.service.db.latest_feishu_image(sender_id, chat_id)
+        if intent.image_source == "target_person" and intent.target_person:
+            latest_for_person = self.service.db.latest_feishu_image_for_person(
+                intent.target_person,
+                chat_id,
+            )
+            return latest_for_person[1] if latest_for_person else None
+        if intent.image_source == "latest_in_chat":
+            latest_in_chat = self.service.db.latest_feishu_image_in_chat(chat_id)
+            return latest_in_chat[1] if latest_in_chat else None
         return None
 
     def _resolve_context_image(
