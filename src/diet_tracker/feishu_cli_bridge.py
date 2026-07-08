@@ -133,28 +133,14 @@ class FeishuCliBridge:
                 return HELP
             if content in {"/今天", "今天", "/today"}:
                 return self.service.today_reply(person_key)
+            target_person_key, image_path = self._resolve_context_image(
+                person_key=person_key,
+                sender_id=sender_id,
+                chat_id=chat_id,
+                chat_type=chat_type,
+                content=content,
+            )
             if self._looks_like_image_reference(content):
-                target_person_key = self._mentioned_person_key(content) or person_key
-                image_sender_id = sender_id
-                image_path = None
-                if target_person_key != person_key:
-                    latest_for_person = self.service.db.latest_feishu_image_for_person(
-                        target_person_key,
-                        chat_id,
-                    )
-                    if latest_for_person:
-                        image_sender_id, image_path = latest_for_person
-                if not image_path:
-                    image_path = self.service.db.latest_feishu_image(sender_id, chat_id)
-                if not image_path and chat_type == "group":
-                    latest_in_chat = self.service.db.latest_feishu_image_in_chat(chat_id)
-                    if latest_in_chat:
-                        image_sender_id, image_path = latest_in_chat
-                        target_person_key = (
-                            self._mentioned_person_key(content)
-                            or self._resolve_person(image_sender_id)
-                            or person_key
-                        )
                 if not image_path:
                     return (
                         "我没拿到你前面那张图片。\n"
@@ -170,7 +156,11 @@ class FeishuCliBridge:
                 )
                 self.sync_base_with_cli(entry)
                 return self.service.entry_reply(entry)
-            entry = self.service.add_food(person_key=person_key, text=content, image_path=None)
+            entry = self.service.add_food(
+                person_key=target_person_key,
+                text=content,
+                image_path=Path(image_path) if image_path else None,
+            )
             self.sync_base_with_cli(entry)
             return self.service.entry_reply(entry)
 
@@ -183,6 +173,40 @@ class FeishuCliBridge:
             return self.service.entry_reply(entry)
 
         return None
+
+    def _resolve_context_image(
+        self,
+        person_key: PersonKey,
+        sender_id: str,
+        chat_id: str,
+        chat_type: str,
+        content: str,
+    ) -> tuple[PersonKey, str | None]:
+        target_person_key = self._mentioned_person_key(content) or person_key
+        image_path: str | None = None
+
+        if target_person_key != person_key:
+            latest_for_person = self.service.db.latest_feishu_image_for_person(
+                target_person_key,
+                chat_id,
+            )
+            if latest_for_person:
+                _, image_path = latest_for_person
+
+        if not image_path:
+            image_path = self.service.db.latest_feishu_image(sender_id, chat_id)
+
+        if not image_path and chat_type == "group":
+            latest_in_chat = self.service.db.latest_feishu_image_in_chat(chat_id)
+            if latest_in_chat:
+                image_sender_id, image_path = latest_in_chat
+                target_person_key = (
+                    self._mentioned_person_key(content)
+                    or self._resolve_person(image_sender_id)
+                    or person_key
+                )
+
+        return target_person_key, image_path
 
     def _should_handle_group_message(
         self,
