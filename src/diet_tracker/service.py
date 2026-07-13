@@ -64,13 +64,14 @@ class DietTrackerService:
 
     def entry_reply(self, entry: FoodEntry) -> str:
         e = entry.estimate
+        person = self.settings.people[entry.person_key]
         summary = self.db.daily_summary(
             entry.person_key,
             date.today(),
-            self.settings.people[entry.person_key].daily_target_kcal,
+            person.daily_target_kcal,
         )
         return (
-            f"已记录：{e.dish_name}\n"
+            f"已记录到 {person.display_name}：{e.dish_name}\n"
             f"估算：{e.calories_kcal} kcal\n"
             f"蛋白质 {e.protein_g}g | 碳水 {e.carbs_g}g | 脂肪 {e.fat_g}g\n"
             f"份量：{e.portion_description}\n"

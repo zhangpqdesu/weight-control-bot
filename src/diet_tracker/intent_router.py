@@ -120,7 +120,8 @@ class IntentRouter:
     def fallback(self, context: IntentContext) -> Intent:
         text = context.content.strip()
         normalized = text.replace(" ", "")
-        target = self._target_from_text(normalized) or context.sender_person
+        explicit_target = self._explicit_target_from_text(normalized)
+        target = explicit_target or context.sender_person
         meal_words = {"早餐", "早饭", "午餐", "午饭", "晚餐", "晚饭", "夜宵", "加餐"}
         image_source: ImageSource = "none"
         if target == "gf" and context.sender_person != "gf" and context.gf_has_recent_image:
@@ -202,7 +203,12 @@ class IntentRouter:
         return Intent(action="ignore", should_reply=False, reason="not addressed to bot")
 
     def _normalize(self, intent: Intent, context: IntentContext) -> Intent:
-        if not intent.target_person:
+        explicit_target = self._explicit_target_from_text(context.content.replace(" ", ""))
+        if explicit_target:
+            intent.target_person = explicit_target
+        elif context.sender_person:
+            intent.target_person = context.sender_person
+        elif not intent.target_person:
             intent.target_person = context.sender_person
         if not intent.normalized_text:
             intent.normalized_text = context.content
@@ -219,10 +225,10 @@ class IntentRouter:
             intent.image_source = "none"
         return intent
 
-    def _target_from_text(self, normalized: str) -> PersonKey | None:
-        if "小韩" in normalized or "女朋友" in normalized or "她" in normalized:
+    def _explicit_target_from_text(self, normalized: str) -> PersonKey | None:
+        if "小韩" in normalized or "女朋友" in normalized:
             return "gf"
-        if "小张" in normalized or "我的" in normalized or normalized.startswith("我"):
+        if "小张" in normalized:
             return "me"
         return None
 
